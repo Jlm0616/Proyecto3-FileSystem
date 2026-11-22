@@ -5,6 +5,9 @@ import config.ConfiguracionDisco.EstrategiaAsignacion;
 import config.ValidadorConfiguracion;
 import modelo.disco.Superbloque;
 import modelo.disco.DistribucionDisco;
+import modelo.disco.RegistroMBR;
+import almacenamiento.serializacion.SerializadorMBR;
+import almacenamiento.serializacion.SerializadorSuperbloque;
 
 /**
  * Punto de entrada del Sistema de Archivos Virtual.
@@ -147,6 +150,137 @@ public class Main {
         System.out.println("Bloques de datos: "
                 + superbloque.getCantidadBloquesDatos());
 
+
+        // ==========================================
+        // PRUEBA DEL MBR SIMULADO
+        // ==========================================
+
+        long inicioParticion =
+                distribucion.getInicioSuperbloque();
+
+        long tamanoParticion =
+                configuracion.getTamanoDiscoBytes()
+                - inicioParticion;
+
+        // Identificador temporal para la prueba.
+        // En format se generara automaticamente.
+        long identificadorDisco = 1001L;
+
+        RegistroMBR mbr = new RegistroMBR(
+                identificadorDisco,
+                configuracion.getTamanoDiscoBytes(),
+                inicioParticion,
+                tamanoParticion
+        );
+
+        System.out.println();
+        System.out.println("Informacion del MBR:");
+        System.out.println("------------------------------");
+
+        System.out.println("Magic Number: "
+                + Integer.toHexString(mbr.getMagicNumber()));
+
+        System.out.println("Version: "
+                + mbr.getVersion());
+
+        System.out.println("Identificador del disco: "
+                + mbr.getIdentificadorDisco());
+
+        System.out.println("Tamano del disco (bytes): "
+                + mbr.getTamanoDiscoBytes());
+
+        System.out.println("Inicio de particion: "
+                + mbr.getInicioParticion());
+
+        System.out.println("Tamano de particion: "
+                + mbr.getTamanoParticion());
+
+        System.out.println("Tipo de particion: 0x"
+                + Integer.toHexString(mbr.getTipoParticion()));
+
+        System.out.println("Firma MBR: 0x"
+                + Integer.toHexString(mbr.getFirmaMBR()));
+        
+        // ==========================================
+        // PRUEBA DE SERIALIZACION BINARIA
+        // ==========================================
+
+        System.out.println();
+        System.out.println("Prueba de serializacion binaria:");
+        System.out.println("------------------------------");
+
+        try {
+
+            // 1. Serializar el MBR.
+            byte[] bytesMBR = SerializadorMBR.serializar(mbr);
+
+            // 2. Recuperar el MBR desde sus bytes.
+            RegistroMBR mbrRecuperado =
+                    SerializadorMBR.deserializar(bytesMBR);
+
+            boolean mbrCorrecto =
+                    mbrRecuperado.getIdentificadorDisco()
+                    == mbr.getIdentificadorDisco()
+                    && mbrRecuperado.getTamanoDiscoBytes()
+                    == mbr.getTamanoDiscoBytes()
+                    && mbrRecuperado.getInicioParticion()
+                    == mbr.getInicioParticion()
+                    && mbrRecuperado.getTamanoParticion()
+                    == mbr.getTamanoParticion();
+
+            System.out.println("MBR serializado: "
+                    + bytesMBR.length + " bytes");
+
+            System.out.println("MBR recuperado: "
+                    + (mbrCorrecto ? "CORRECTO" : "ERROR"));
+
+            // 3. Serializar el superbloque.
+            byte[] bytesSuperbloque =
+                    SerializadorSuperbloque.serializar(superbloque);
+
+            // 4. Recuperar el superbloque.
+            Superbloque superbloqueRecuperado =
+                    SerializadorSuperbloque.deserializar(
+                            bytesSuperbloque);
+
+            boolean superbloqueCorrecto =
+                    superbloqueRecuperado.getMagicNumber()
+                    == superbloque.getMagicNumber()
+                    && superbloqueRecuperado.getNombreFileSystem()
+                            .equals(superbloque.getNombreFileSystem())
+                    && superbloqueRecuperado.getTamanoDiscoBytes()
+                    == superbloque.getTamanoDiscoBytes()
+                    && superbloqueRecuperado.getTamanoBloqueBytes()
+                    == superbloque.getTamanoBloqueBytes()
+                    && superbloqueRecuperado.getEstrategiaAsignacion()
+                    == superbloque.getEstrategiaAsignacion()
+                    && superbloqueRecuperado.getInicioBitmap()
+                    == superbloque.getInicioBitmap()
+                    && superbloqueRecuperado.getInicioMetadatos()
+                    == superbloque.getInicioMetadatos()
+                    && superbloqueRecuperado.getInicioDatos()
+                    == superbloque.getInicioDatos()
+                    && superbloqueRecuperado.getCantidadBloquesDatos()
+                    == superbloque.getCantidadBloquesDatos();
+
+            System.out.println("Superbloque serializado: "
+                    + bytesSuperbloque.length + " bytes");
+
+            System.out.println("Superbloque recuperado: "
+                    + (superbloqueCorrecto
+                            ? "CORRECTO" : "ERROR"));
+
+            if (!mbrCorrecto || !superbloqueCorrecto) {
+                System.out.println(
+                        "ERROR: Los datos recuperados no coinciden.");
+                return;
+            }
+
+        } catch (IllegalArgumentException e) {
+            System.out.println("ERROR: " + e.getMessage());
+            return;
+        }
+        
         System.out.println();
         System.out.println("Pruebas iniciales finalizadas.");
     }
