@@ -1,0 +1,14 @@
+﻿# NetBeans - archivos generados
+/Codigo/build/
+/Codigo/dist/
+/Codigo/nbproject/private/
+
+# Archivos compilados
+*.class
+
+# Discos virtuales de prueba
+*.fs
+
+# Archivos temporales
+*.log
+*.tmp
