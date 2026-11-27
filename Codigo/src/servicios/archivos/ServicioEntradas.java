@@ -11,8 +11,8 @@ import modelo.archivos.FCB;
 
 /**
  * Operaciones persistentes sobre entradas de archivos y directorios.
- * La eliminacion por ahora se limita a archivos vacios y directorios
- * cuyos descendientes tampoco tengan contenido asignado.
+ * La eliminacion de archivos con contenido delega la liberacion de
+ * bloques al ServicioContenidoArchivos.
  * No gestiona permisos ni sesiones (fase de seguridad posterior).
  */
 public final class ServicioEntradas {
@@ -20,15 +20,23 @@ public final class ServicioEntradas {
     private final GestorFCB gestor;
     private final ServicioRutas rutas;
     private final ServicioDirectorios directorios;
+    private final ServicioContenidoArchivos contenido;
 
     public ServicioEntradas(GestorFCB gestor, ServicioRutas rutas,
             ServicioDirectorios directorios) {
+        this(gestor, rutas, directorios, null);
+    }
+
+    /** Constructor para eliminacion integral de archivos con contenido. */
+    public ServicioEntradas(GestorFCB gestor, ServicioRutas rutas,
+            ServicioDirectorios directorios, ServicioContenidoArchivos contenido) {
         if (gestor == null || rutas == null || directorios == null) {
             throw new IllegalArgumentException("Los servicios de archivos son obligatorios.");
         }
         this.gestor = gestor;
         this.rutas = rutas;
         this.directorios = directorios;
+        this.contenido = contenido;
     }
 
     /** Crea un archivo vacio sin sobrescribir uno existente. */
@@ -142,16 +150,34 @@ public final class ServicioEntradas {
 
         List<FCB> orden = new ArrayList<>();
         reunirPostorden(objetivo, recursivo, orden, new HashSet<>());
+        // Validar el arbol completo antes de borrar cualquier entrada.
         for (FCB fcb : orden) {
-            if (fcb.getCantidadBloques() != 0
+            if (fcb.getCantidadEnlaces() != 1) {
+                throw new IOException("No se pueden eliminar entradas con varios enlaces: "
+                        + fcb.getNombre());
+            }
+            boolean tieneDatos = fcb.getCantidadBloques() != 0
                     || fcb.getBloqueInicial() != FCB.SIN_BLOQUE
-                    || fcb.getTamanoBytes() != 0
-                    || fcb.getCantidadEnlaces() != 1) {
-                throw new IOException("No se puede eliminar un FCB con contenido o enlaces: "
+                    || fcb.getTamanoBytes() != 0;
+            if (fcb.esDirectorio() && tieneDatos) {
+                throw new IOException("Directorio con bloques inesperados: "
+                        + fcb.getNombre());
+            }
+            if (fcb.esArchivo() && tieneDatos && contenido == null) {
+                throw new IOException("No hay un gestor de contenido para liberar bloques: "
                         + fcb.getNombre());
             }
         }
+        // Orden postorden: archivos primero y directorios despues.
+        // No es una transaccion atomica; ante un error de I/O puede
+        // quedar parte del arbol eliminada.
         for (FCB fcb : orden) {
+            if (fcb.esArchivo() && contenido != null
+                    && (fcb.getCantidadBloques() != 0
+                        || fcb.getBloqueInicial() != FCB.SIN_BLOQUE
+                        || fcb.getTamanoBytes() != 0)) {
+                contenido.vaciar(fcb.getId());
+            }
             gestor.eliminarFCB(fcb.getId());
         }
         return orden.size();

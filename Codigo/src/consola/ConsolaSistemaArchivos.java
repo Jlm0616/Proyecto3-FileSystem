@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 import java.util.Scanner;
@@ -15,6 +16,7 @@ import modelo.archivos.FCB;
 import servicios.archivos.ServicioRutas;
 import servicios.archivos.ServicioDirectorios;
 import servicios.archivos.ServicioEntradas;
+import servicios.archivos.ServicioContenidoArchivos;
 import java.util.ArrayList;
 
 /**
@@ -29,6 +31,7 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
     private ServicioRutas servicioRutas;
     private ServicioDirectorios servicioDirectorios;
     private ServicioEntradas servicioEntradas;
+    private ServicioContenidoArchivos servicioContenido;
     private int directorioActual;
 
     public ConsolaSistemaArchivos() {
@@ -121,6 +124,12 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
                     case "mv":
                         moverEntrada(argumento);
                         break;
+                    case "cat":
+                        mostrarContenido(argumento);
+                        break;
+                    case "write":
+                        escribirContenido(argumento);
+                        break;
                     case "exit":
                     case "salir":
                         System.out.println("Sistema cerrado.");
@@ -146,9 +155,11 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
         System.out.println("  ls -R [ruta]     Listar directorios recursivamente");
         System.out.println("  mkdir ruta       Crear un directorio (el padre debe existir)");
         System.out.println("  touch ruta       Crear un archivo vacio");
-        System.out.println("  rm ruta          Borrar archivo vacio o directorio vacio");
-        System.out.println("  rm -R ruta       Borrar directorio y contenido vacio recursivamente");
+        System.out.println("  rm ruta          Borrar archivo o directorio vacio");
+        System.out.println("  rm -R ruta       Borrar directorio y contenido recursivamente");
         System.out.println("  mv origen destino Mover o renombrar una entrada");
+        System.out.println("  cat ruta         Mostrar el contenido de un archivo");
+        System.out.println("  write ruta texto Reemplazar contenido (comando provisional)");
         System.out.println("  help             Mostrar esta ayuda");
         System.out.println("  exit             Salir y cerrar el disco");
         System.out.println("Otros comandos de archivos y usuarios se agregaran posteriormente.");
@@ -189,8 +200,10 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
             ServicioRutas nuevasRutas = new ServicioRutas(nuevo.getGestorFCB());
             ServicioDirectorios nuevosDirectorios =
                     new ServicioDirectorios(nuevo.getGestorFCB());
+            ServicioContenidoArchivos nuevoContenido = new ServicioContenidoArchivos(
+                    nuevo.getDisco(), nuevo.getGestorFCB(), nuevo.getGestorEspacioLibre());
             ServicioEntradas nuevasEntradas = new ServicioEntradas(
-                    nuevo.getGestorFCB(), nuevasRutas, nuevosDirectorios);
+                    nuevo.getGestorFCB(), nuevasRutas, nuevosDirectorios, nuevoContenido);
 
             // Comprobar la raiz antes de sustituir el montaje anterior.
             FCB raiz = nuevasRutas.resolver("/", FCB.ID_RAIZ);
@@ -203,6 +216,7 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
             servicioRutas = nuevasRutas;
             servicioDirectorios = nuevosDirectorios;
             servicioEntradas = nuevasEntradas;
+            servicioContenido = nuevoContenido;
             directorioActual = FCB.ID_RAIZ;
             nuevo = null; // La consola pasa a ser propietaria del montaje.
 
@@ -356,7 +370,7 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
                 + servicioRutas.obtenerRutaAbsoluta(creado.getId()));
     }
 
-    /** Borra una entrada; rm -R borra arboles de entradas sin datos asignados. */
+    /** Borra una entrada; rm -R tambien borra arboles de archivos con datos. */
     private void eliminarEntrada(String argumento) throws IOException {
         exigirDiscoMontado();
         boolean recursivo = argumento.equals("-R") || argumento.startsWith("-R ");
@@ -368,6 +382,52 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
         int total = servicioEntradas.eliminar(
                 ruta, directorioActual, recursivo, directorioActual);
         System.out.println("Entradas eliminadas: " + total);
+    }
+
+    /** Muestra los bytes de un archivo interpretados como texto UTF-8. */
+    private void mostrarContenido(String ruta) throws IOException {
+        exigirDiscoMontado();
+        if (ruta.isBlank()) {
+            System.out.println("Uso: cat ruta");
+            return;
+        }
+        FCB fcb = servicioRutas.resolver(ruta, directorioActual);
+        if (!fcb.esArchivo()) {
+            throw new IOException("No es un archivo: " + ruta);
+        }
+        byte[] datos = servicioContenido.leer(fcb.getId());
+        String texto = new String(datos, StandardCharsets.UTF_8);
+        System.out.print(texto);
+        if (!texto.endsWith("\n")) {
+            System.out.println();
+        }
+    }
+
+    /** Escritura de texto UTF-8 para pruebas; note sera el editor definitivo. */
+    private void escribirContenido(String argumento) throws IOException {
+        exigirDiscoMontado();
+        int separador = argumento.indexOf(' ');
+        if (separador <= 0 || separador == argumento.length() - 1) {
+            System.out.println("Uso: write ruta texto");
+            return;
+        }
+        String ruta = argumento.substring(0, separador).trim();
+        String texto = argumento.substring(separador + 1).trim();
+        if (ruta.isEmpty() || texto.isEmpty()) {
+            System.out.println("Uso: write ruta texto");
+            return;
+        }
+        // Permitir comillas dobles opcionales en los extremos.
+        if (texto.length() >= 2 && texto.startsWith("\"") && texto.endsWith("\"")) {
+            texto = texto.substring(1, texto.length() - 1);
+        }
+        FCB fcb = servicioRutas.resolver(ruta, directorioActual);
+        if (!fcb.esArchivo()) {
+            throw new IOException("No es un archivo: " + ruta);
+        }
+        byte[] datos = texto.getBytes(StandardCharsets.UTF_8);
+        servicioContenido.escribir(fcb.getId(), datos);
+        System.out.println("Contenido guardado: " + datos.length + " bytes.");
     }
 
     /** Renombra o mueve conservando la identidad del FCB. */
@@ -385,7 +445,7 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
 
     private void exigirDiscoMontado() {
         if (montaje == null || servicioRutas == null || servicioDirectorios == null
-                || servicioEntradas == null) {
+                || servicioEntradas == null || servicioContenido == null) {
             throw new IllegalStateException("No hay ningun disco montado.");
         }
     }
@@ -443,6 +503,7 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
                 servicioRutas = null;
                 servicioDirectorios = null;
                 servicioEntradas = null;
+                servicioContenido = null;
                 directorioActual = FCB.ID_RAIZ;
             }
         }
