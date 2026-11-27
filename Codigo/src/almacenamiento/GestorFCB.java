@@ -1,7 +1,6 @@
 package almacenamiento;
 
 import almacenamiento.serializacion.SerializadorFCB;
-import almacenamiento.serializacion.SerializadorFCB;
 import java.io.IOException;
 import modelo.archivos.FCB;
 import modelo.disco.DistribucionMetadatos;
@@ -67,6 +66,53 @@ public final class GestorFCB {
                         "FCB inconsistente: ID distinto de su indice fisico.");
             }
             return fcb;
+        }
+    }
+
+    /**
+     * Actualiza un registro existente conservando su ID y posicion.
+     * Se usa para cambios de nombre, directorio padre y otros metadatos.
+     */
+    public void actualizarFCB(long indice, FCB actualizado) throws IOException {
+        if (actualizado == null || actualizado.getId() != indice) {
+            throw new IllegalArgumentException("El FCB actualizado debe mantener su ID.");
+        }
+        long offset = distribucion.obtenerOffsetFCB(indice);
+        byte[] registro = SerializadorFCB.serializar(actualizado);
+        synchronized (disco) {
+            byte[] anterior = disco.leer(offset, SerializadorFCB.TAMANO);
+            if (estaVacio(anterior)) {
+                throw new IOException("No existe el FCB que se desea actualizar.");
+            }
+            FCB original = SerializadorFCB.deserializar(anterior);
+            if (original.getId() != indice) {
+                throw new IOException("El registro actual tiene un ID inconsistente.");
+            }
+            disco.escribir(offset, registro);
+        }
+    }
+
+    /**
+     * Libera un registro FCB. No libera bloques de contenido: por seguridad
+     * rechaza archivos con bloques asignados hasta disponer del gestor adecuado.
+     */
+    public void eliminarFCB(long indice) throws IOException {
+        if (indice < 3) {
+            throw new IOException("No se pueden eliminar los FCB iniciales del sistema.");
+        }
+        long offset = distribucion.obtenerOffsetFCB(indice);
+        synchronized (disco) {
+            FCB existente = leerFCB(indice);
+            if (existente == null) {
+                throw new IOException("No existe el FCB que se desea eliminar.");
+            }
+            if (existente.getCantidadBloques() != 0
+                    || existente.getBloqueInicial() != FCB.SIN_BLOQUE
+                    || existente.getTamanoBytes() != 0
+                    || existente.getCantidadEnlaces() != 1) {
+                throw new IOException("El FCB tiene contenido o enlaces que aun no se pueden liberar.");
+            }
+            disco.escribir(offset, new byte[SerializadorFCB.TAMANO]);
         }
     }
 

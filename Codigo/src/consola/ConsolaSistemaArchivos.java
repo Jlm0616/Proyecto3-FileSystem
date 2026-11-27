@@ -8,22 +8,33 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Scanner;
+import modelo.archivos.FCB;
+import servicios.archivos.ServicioRutas;
+import servicios.archivos.ServicioDirectorios;
+import servicios.archivos.ServicioEntradas;
+import java.util.ArrayList;
 
 /**
- * Interfaz de linea de comandos del sistema de archivos.
- * Solo interpreta entrada/salida; delega el formateo y montaje a sus servicios.
+ * Interfaz de linea de comandos del sistema de archivos virtual.
+ * Interpreta comandos y delega la logica a sus servicios.
  */
 public final class ConsolaSistemaArchivos implements AutoCloseable {
 
     private final Scanner entrada;
     private final LectorConfiguracionDisco lectorConfiguracion;
     private MontadorDisco montaje;
+    private ServicioRutas servicioRutas;
+    private ServicioDirectorios servicioDirectorios;
+    private ServicioEntradas servicioEntradas;
+    private int directorioActual;
 
     public ConsolaSistemaArchivos() {
         this.entrada = new Scanner(System.in);
         this.lectorConfiguracion = new LectorConfiguracionDisco(entrada);
+        this.directorioActual = FCB.ID_RAIZ;
     }
 
     /**
@@ -50,6 +61,7 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
                 System.out.println();
                 return;
             }
+
             String linea = entrada.nextLine().trim();
             if (linea.isEmpty()) {
                 continue;
@@ -84,6 +96,31 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
                     case "info":
                         mostrarInformacion();
                         break;
+                    case "pwd":
+                        if (!argumento.isEmpty()) {
+                            System.out.println("Uso: pwd");
+                        } else {
+                            mostrarDirectorioActual();
+                        }
+                        break;
+                    case "cd":
+                        cambiarDirectorio(argumento);
+                        break;
+                    case "ls":
+                        listarConOpciones(argumento);
+                        break;
+                    case "mkdir":
+                        crearDirectorio(argumento);
+                        break;
+                    case "touch":
+                        crearArchivo(argumento);
+                        break;
+                    case "rm":
+                        eliminarEntrada(argumento);
+                        break;
+                    case "mv":
+                        moverEntrada(argumento);
+                        break;
                     case "exit":
                     case "salir":
                         System.out.println("Sistema cerrado.");
@@ -100,12 +137,21 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
 
     private void mostrarAyuda() {
         System.out.println("Comandos disponibles:");
-        System.out.println("  format          Crear un disco virtual nuevo (interactivo)");
+        System.out.println("  format           Crear un disco virtual nuevo (interactivo)");
         System.out.println("  mount archivo.fs Montar un disco existente");
-        System.out.println("  info            Ver informacion del disco montado");
-        System.out.println("  help            Mostrar esta ayuda");
-        System.out.println("  exit            Salir y cerrar el disco");
-        System.out.println("Los comandos de archivos y usuarios se agregaran en las siguientes fases.");
+        System.out.println("  info             Ver informacion del disco montado");
+        System.out.println("  pwd              Mostrar directorio actual");
+        System.out.println("  cd ruta          Cambiar de directorio (/, ., .., rutas absolutas o relativas)");
+        System.out.println("  ls [ruta]        Listar contenido del directorio actual o indicado");
+        System.out.println("  ls -R [ruta]     Listar directorios recursivamente");
+        System.out.println("  mkdir ruta       Crear un directorio (el padre debe existir)");
+        System.out.println("  touch ruta       Crear un archivo vacio");
+        System.out.println("  rm ruta          Borrar archivo vacio o directorio vacio");
+        System.out.println("  rm -R ruta       Borrar directorio y contenido vacio recursivamente");
+        System.out.println("  mv origen destino Mover o renombrar una entrada");
+        System.out.println("  help             Mostrar esta ayuda");
+        System.out.println("  exit             Salir y cerrar el disco");
+        System.out.println("Otros comandos de archivos y usuarios se agregaran posteriormente.");
     }
 
     private void formatearInteractivo() throws IOException {
@@ -127,7 +173,6 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
             Path creado = FormateadorDisco.formatear(configuracion, clave);
             System.out.println("Disco formateado correctamente: "
                     + creado.toAbsolutePath());
-            // Montar sin perder el disco anterior en caso de error.
             montar(creado);
         } finally {
             Arrays.fill(clave, '\0');
@@ -138,10 +183,29 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
     }
 
     private void montar(Path ruta) {
+        MontadorDisco nuevo = null;
         try {
-            MontadorDisco nuevo = MontadorDisco.montar(ruta);
+            nuevo = MontadorDisco.montar(ruta);
+            ServicioRutas nuevasRutas = new ServicioRutas(nuevo.getGestorFCB());
+            ServicioDirectorios nuevosDirectorios =
+                    new ServicioDirectorios(nuevo.getGestorFCB());
+            ServicioEntradas nuevasEntradas = new ServicioEntradas(
+                    nuevo.getGestorFCB(), nuevasRutas, nuevosDirectorios);
+
+            // Comprobar la raiz antes de sustituir el montaje anterior.
+            FCB raiz = nuevasRutas.resolver("/", FCB.ID_RAIZ);
+            if (!raiz.esDirectorio()) {
+                throw new IOException("La raiz del volumen no es un directorio.");
+            }
+
             MontadorDisco anterior = montaje;
             montaje = nuevo;
+            servicioRutas = nuevasRutas;
+            servicioDirectorios = nuevosDirectorios;
+            servicioEntradas = nuevasEntradas;
+            directorioActual = FCB.ID_RAIZ;
+            nuevo = null; // La consola pasa a ser propietaria del montaje.
+
             if (anterior != null) {
                 try {
                     anterior.close();
@@ -150,13 +214,179 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
                             + ex.getMessage());
                 }
             }
+
             System.out.println("Disco montado: " + ruta.toAbsolutePath());
             System.out.println("File System: "
-                    + nuevo.getDisco().getSuperbloque().getNombreFileSystem());
+                    + montaje.getDisco().getSuperbloque().getNombreFileSystem());
             System.out.println("Usuario inicial disponible: "
-                    + nuevo.getRoot().getNombreUsuario());
-        } catch (IOException ex) {
+                    + montaje.getRoot().getNombreUsuario());
+        } catch (IOException | RuntimeException ex) {
             System.out.println("No se pudo montar el disco: " + ex.getMessage());
+        } finally {
+            if (nuevo != null) {
+                try {
+                    nuevo.close();
+                } catch (IOException e) {
+                    System.out.println("Aviso: error cerrando montaje fallido: "
+                            + e.getMessage());
+                }
+            }
+        }
+    }
+
+    /** Muestra la ruta absoluta del directorio actual. */
+    private void mostrarDirectorioActual() throws IOException {
+        exigirDiscoMontado();
+        System.out.println(servicioRutas.obtenerRutaAbsoluta(directorioActual));
+    }
+
+    /** Cambia el directorio solamente si la ruta existe y es un directorio. */
+    private void cambiarDirectorio(String ruta) throws IOException {
+        exigirDiscoMontado();
+        if (ruta.isEmpty()) {
+            System.out.println("Uso: cd ruta");
+            return;
+        }
+
+        FCB destino = servicioRutas.resolver(ruta, directorioActual);
+        if (!destino.esDirectorio()) {
+            throw new IOException("No es un directorio: " + ruta);
+        }
+
+        // El directorio actual solo cambia despues de validar el destino.
+        directorioActual = destino.getId();
+    }
+
+    /** Reconoce ls y ls -R sin confundir las opciones con las rutas. */
+    private void listarConOpciones(String argumento) throws IOException {
+        if (argumento.equals("-R") || argumento.startsWith("-R ")) {
+            String ruta = argumento.length() == 2 ? "" : argumento.substring(2).trim();
+            if (ruta.startsWith("-")) {
+                System.out.println("Uso: ls -R [ruta]");
+                return;
+            }
+            exigirDiscoMontado();
+            FCB inicio = servicioRutas.resolver(
+                    ruta.isEmpty() ? "." : ruta, directorioActual);
+            if (!inicio.esDirectorio()) {
+                throw new IOException("No es un directorio: " + ruta);
+            }
+            List<String> lineas = new ArrayList<>();
+            servicioEntradas.listarRecursivo(inicio,
+                    servicioRutas.obtenerRutaAbsoluta(inicio.getId()), lineas);
+            for (String linea : lineas) {
+                System.out.println(linea);
+            }
+        } else {
+            listarDirectorio(argumento);
+        }
+    }
+
+    /** Lista solo los hijos directos de un directorio existente. */
+    private void listarDirectorio(String ruta) throws IOException {
+        exigirDiscoMontado();
+        FCB destino = ruta.isEmpty()
+                ? servicioRutas.resolver(".", directorioActual)
+                : servicioRutas.resolver(ruta, directorioActual);
+
+        if (!destino.esDirectorio()) {
+            throw new IOException("No es un directorio: " + destino.getNombre());
+        }
+
+        List<FCB> hijos = servicioDirectorios.listarHijos(destino.getId());
+        for (FCB hijo : hijos) {
+            System.out.println(hijo.getNombre() + (hijo.esDirectorio() ? "/" : ""));
+        }
+    }
+
+    /** Crea un directorio persistente a partir de una ruta absoluta o relativa. */
+    private void crearDirectorio(String ruta) throws IOException {
+        exigirDiscoMontado();
+        if (ruta.isBlank()) {
+            System.out.println("Uso: mkdir ruta");
+            return;
+        }
+
+        // Se admite una barra final, por ejemplo mkdir documentos/.
+        String normalizada = ruta.trim();
+        while (normalizada.endsWith("/") && normalizada.length() > 1) {
+            normalizada = normalizada.substring(0, normalizada.length() - 1);
+        }
+        if (normalizada.equals("/")) {
+            throw new IllegalArgumentException("No se puede crear el directorio raiz.");
+        }
+
+        int separador = normalizada.lastIndexOf('/');
+        String nombre = normalizada.substring(separador + 1);
+        String rutaPadre;
+        if (separador < 0) {
+            rutaPadre = ".";
+        } else if (separador == 0) {
+            rutaPadre = "/";
+        } else {
+            rutaPadre = normalizada.substring(0, separador);
+        }
+
+        FCB padre = servicioRutas.resolver(rutaPadre, directorioActual);
+        if (!padre.esDirectorio()) {
+            throw new IOException("El padre no es un directorio: " + rutaPadre);
+        }
+
+        // Por ahora la consola trabaja con el usuario inicial root.
+        // La validacion de permisos por sesion se implementara en la fase de seguridad.
+        int propietario = montaje.getRoot().getId();
+        int grupo = montaje.getRoot().getIdGrupoPrincipal();
+        FCB creado = servicioDirectorios.crearDirectorio(
+                padre.getId(), nombre, propietario, grupo, 0755);
+
+        System.out.println("Directorio creado: "
+                + servicioRutas.obtenerRutaAbsoluta(creado.getId()));
+    }
+
+    /** Crea un archivo vacio persistente. */
+    private void crearArchivo(String ruta) throws IOException {
+        exigirDiscoMontado();
+        if (ruta.isBlank()) {
+            System.out.println("Uso: touch ruta");
+            return;
+        }
+        FCB creado = servicioEntradas.crearArchivo(ruta, directorioActual,
+                montaje.getRoot().getId(), montaje.getRoot().getIdGrupoPrincipal());
+        System.out.println("Archivo creado: "
+                + servicioRutas.obtenerRutaAbsoluta(creado.getId()));
+    }
+
+    /** Borra una entrada; rm -R borra arboles de entradas sin datos asignados. */
+    private void eliminarEntrada(String argumento) throws IOException {
+        exigirDiscoMontado();
+        boolean recursivo = argumento.equals("-R") || argumento.startsWith("-R ");
+        String ruta = recursivo ? argumento.substring(2).trim() : argumento;
+        if (ruta.isBlank() || ruta.startsWith("-")) {
+            System.out.println("Uso: rm [-R] ruta");
+            return;
+        }
+        int total = servicioEntradas.eliminar(
+                ruta, directorioActual, recursivo, directorioActual);
+        System.out.println("Entradas eliminadas: " + total);
+    }
+
+    /** Renombra o mueve conservando la identidad del FCB. */
+    private void moverEntrada(String argumento) throws IOException {
+        exigirDiscoMontado();
+        String[] partes = argumento.trim().split("\\s+");
+        if (partes.length != 2) {
+            System.out.println("Uso: mv origen destino (sin espacios en las rutas)");
+            return;
+        }
+        FCB movido = servicioEntradas.mover(partes[0], partes[1], directorioActual);
+        System.out.println("Entrada ubicada en: "
+                + servicioRutas.obtenerRutaAbsoluta(movido.getId()));
+    }
+
+    private void exigirDiscoMontado() {
+        if (montaje == null || servicioRutas == null || servicioDirectorios == null
+                || servicioEntradas == null) {
+            throw new IllegalStateException("No hay ningun disco montado.");
         }
     }
 
@@ -199,7 +429,6 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
             }
             return clave;
         }
-        // NetBeans normalmente no dispone de Console; alli se ve lo escrito.
         System.out.println("Aviso: esta consola no puede ocultar la contrasena.");
         return solicitarTexto(mensaje).toCharArray();
     }
@@ -207,8 +436,15 @@ public final class ConsolaSistemaArchivos implements AutoCloseable {
     @Override
     public void close() throws IOException {
         if (montaje != null) {
-            montaje.close();
-            montaje = null;
+            try {
+                montaje.close();
+            } finally {
+                montaje = null;
+                servicioRutas = null;
+                servicioDirectorios = null;
+                servicioEntradas = null;
+                directorioActual = FCB.ID_RAIZ;
+            }
         }
         // No se cierra System.in; pertenece al proceso principal.
     }
